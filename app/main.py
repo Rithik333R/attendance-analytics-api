@@ -463,34 +463,114 @@ def punch_out(body: PunchOutIn):
 
 
 
+
 @app.get("/attendance")
 def list_attendance(
     emp_code: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     status: Optional[str] = None,
-    page: int = 1,
-    page_size: int = 20,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
 ):
+    # 1. Validate date format and calendar dates
+    def validate_date(value: Optional[str]) -> None:
+        if value is None:
+            return
+
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d")
+            if parsed.strftime("%Y-%m-%d") != value:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid date: {value}. Expected YYYY-MM-DD.",
+            )
+
+    validate_date(date_from)
+    validate_date(date_to)
+
+    # 2. Reject reversed date ranges
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(
+            status_code=422,
+            detail="date_from must be less than or equal to date_to",
+        )
+
+    # 3. Validate attendance status
+    allowed_statuses = {
+        "PRESENT",
+        "WFH",
+        "ON_DUTY",
+        "ABSENT",
+        "LEAVE",
+    }
+
+    if status is not None and status not in allowed_statuses:
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid status",
+        )
+
+    # 4. Build the MongoDB filter
     q = {}
-    if emp_code:
+
+    if emp_code is not None:
         q["emp_code"] = emp_code
+
     if date_from or date_to:
         q["date"] = {}
+
         if date_from:
             q["date"]["$gte"] = date_from
+
         if date_to:
             q["date"]["$lte"] = date_to
-    if status:
-        q["status"] = status
-    docs = list(db.attendance_logs.find(q))
-    docs.sort(key=lambda d: d["date"], reverse=True)
-    total = len(docs)
-    page_docs = docs[(page - 1) * page_size : page * page_size]
-    for d in page_docs:
-        d["id"] = str(d.pop("_id"))
-    return {"items": page_docs, "total": total, "page": page, "page_size": page_size}
 
+    if status is not None:
+        q["status"] = status
+
+    # 5. Count all matching records without loading them
+    total = db.attendance_logs.count_documents(q)
+
+    # 6. Sort and paginate inside MongoDB
+    docs = list(
+        db.attendance_logs.find(q, {"_id": 0})
+        .sort([("date", -1), ("emp_code", 1)])
+        .skip((page - 1) * page_size)
+        .limit(page_size)
+    )
+
+    # 7. Convert API timestamps to epoch milliseconds
+    for doc in docs:
+        for field in ("punch_in", "punch_out"):
+            value = doc.get(field)
+            if isinstance(value, datetime):
+                doc[field] = to_epoch_ms(value)
+
+        for entry in doc.get("history", []):
+            if isinstance(entry.get("at"), datetime):
+                entry["at"] = to_epoch_ms(entry["at"])
+
+            changes = entry.get("changes", {})
+
+            for field in ("punch_in", "punch_out"):
+                field_changes = changes.get(field)
+
+                if isinstance(field_changes, dict):
+                    for direction in ("from", "to"):
+                        value = field_changes.get(direction)
+
+                        if isinstance(value, datetime):
+                            field_changes[direction] = to_epoch_ms(value)
+
+    return {
+        "items": docs,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    }
 
 # --------------------------------------------------------------------------- #
 # TODO - the rest of the contract (see openapi.yaml):
