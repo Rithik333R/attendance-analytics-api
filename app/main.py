@@ -11,19 +11,43 @@ openapi.yaml for the contract and DATA_MODEL.md for what is stored in MongoDB.
 import os
 import math
 from datetime import datetime, timedelta, timezone
+from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
 from decimal import Decimal, ROUND_HALF_UP
 
 load_dotenv()
 
-client = MongoClient(os.getenv("MONGO_URI", "mongodb://localhost:27017"))
+client = MongoClient(
+    os.getenv("MONGO_URI", "mongodb://localhost:27017"),
+    serverSelectionTimeoutMS=3000,
+)
 db = client[os.getenv("MONGO_DB", "attendance_db")]
+
+
+# Create required indexes idempotently at application startup.
+db.employees.create_index(
+    [("emp_code", 1)],
+    unique=True,
+    name="uniq_employee_code",
+)
+
+
+db.attendance_logs.create_index(
+    [("emp_code", 1), ("date", 1)],
+    unique=True,
+)
+
+
+db.attendance_logs.create_index(
+    [("date", -1), ("emp_code", 1)],
+    name="attendance_date_employee",
+)
+
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -139,33 +163,73 @@ def compute_overtime(
 # --------------------------------------------------------------------------- #
 # Models
 # --------------------------------------------------------------------------- #
+
 class EmployeeIn(BaseModel):
-    emp_code: str
-    name: str
-    email: str
-    department: str
-    shift_start: str = "09:30"
-    shift_end: str = "18:30"
-    joined_on: str
+    emp_code: str = Field(
+        pattern=r"^EMP\d{4,6}$"
+    )
+    name: str = Field(min_length=1, max_length=100)
+    email: str = Field(
+        min_length=3,
+        max_length=120,
+        pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+    )
+    department: str = Field(min_length=1, max_length=50)
+    
+    shift_start: str = Field(
+        default="09:30",
+        pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$",
+    )
+    shift_end: str = Field(
+        default="18:30",
+        pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$",
+    )
+
+    joined_on: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+    @field_validator("joined_on")
+    @classmethod
+    def validate_joined_on(cls, value: str) -> str:
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("joined_on must be a real date in YYYY-MM-DD format")
+        return value
+
+    @model_validator(mode="after")
+    def validate_shifts(self):
+        if self.shift_start == self.shift_end:
+            raise ValueError("shift_start and shift_end must differ")
+        return self
+
 
 
 class PunchInIn(BaseModel):
     emp_code: str
-    punched_at: Optional[int] = None
+    punched_at: Optional[StrictInt] = None
     status: str = "PRESENT"
 
 
 class PunchOutIn(BaseModel):
     emp_code: str
-    punched_at: Optional[int] = None
+    punched_at: Optional[StrictInt] = None
 
 
 # --------------------------------------------------------------------------- #
 # Endpoints provided
 # --------------------------------------------------------------------------- #
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    try:
+        client.admin.command("ping")
+        return {"status": "ok"}
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable",
+        )
+
 
 
 @app.post("/employees", status_code=201)
@@ -174,7 +238,15 @@ def create_employee(body: EmployeeIn):
         raise HTTPException(409, "emp_code already exists")
     doc = body.model_dump()
     doc["created_at"] = datetime.now(timezone.utc)
-    db.employees.insert_one(doc)
+    
+    try:
+        result = db.employees.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(
+            status_code=409,
+            detail="Employee code already exists",
+        )
+
     doc.pop("_id", None)
     doc["created_at"] = to_epoch_ms(doc["created_at"])
     return doc
