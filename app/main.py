@@ -18,6 +18,7 @@ from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from pymongo import MongoClient
 from pymongo.errors import DuplicateKeyError
+from decimal import Decimal, ROUND_HALF_UP
 
 load_dotenv()
 
@@ -51,8 +52,14 @@ def parse_epoch_ms(value: Optional[int]) -> datetime:
 
 
 
-def compute_late_minutes(punch_in: datetime, shift_start: str) -> int:
+
+def compute_late_minutes(
+    punch_in: datetime,
+    shift_start: str,
+    shift_end: str,
+) -> int:
     h, m = map(int, shift_start.split(":"))
+    end_h, end_m = map(int, shift_end.split(":"))
 
     start = punch_in.replace(
         hour=h,
@@ -61,14 +68,24 @@ def compute_late_minutes(punch_in: datetime, shift_start: str) -> int:
         microsecond=0,
     )
 
+    # If this is an overnight shift and punch-in is
+    # after midnight but before the shift's end,
+    # the shift started on the previous calendar day.
+    overnight = (end_h, end_m) <= (h, m)
+    punch_time = (punch_in.hour, punch_in.minute)
+
+    if overnight and punch_time < (end_h, end_m):
+        start -= timedelta(days=1)
+
     elapsed_seconds = int((punch_in - start).total_seconds())
 
-    # Grace period: up to and including 10 minutes
+    # Grace period: up to and including 10 minutes.
     if elapsed_seconds <= 10 * 60:
         return 0
 
-    # Count whole minutes since shift start
+    # Count whole minutes since shift start.
     return elapsed_seconds // 60
+
 
 def to_epoch_ms(value):
     if value is None:
@@ -78,14 +95,45 @@ def to_epoch_ms(value):
     return int(value.timestamp() * 1000)
 
 
+
 def compute_work_hours(punch_in: datetime, punch_out: datetime) -> float:
-    return round((punch_out - punch_in).total_seconds() / 3600, 2)
+    elapsed_seconds = Decimal(str((punch_out - punch_in).total_seconds()))
+    hours = elapsed_seconds / Decimal("3600")
+    rounded_hours = hours.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    return float(rounded_hours)
 
 
-def compute_overtime(punch_out: datetime, shift_end: str, date_str: str) -> int:
-    h, m = map(int, shift_end.split(":"))
-    end = datetime.fromisoformat(date_str).replace(hour=h, minute=m, tzinfo=IST)
-    return max(0, int((punch_out - end).total_seconds() / 60))
+
+
+def compute_overtime(
+    punch_out: datetime,
+    shift_start: str,
+    shift_end: str,
+    date_str: str,
+) -> int:
+    start_h, start_m = map(int, shift_start.split(":"))
+    end_h, end_m = map(int, shift_end.split(":"))
+
+    shift_end_dt = datetime.fromisoformat(date_str).replace(
+        hour=end_h,
+        minute=end_m,
+        second=0,
+        microsecond=0,
+        tzinfo=IST,
+    )
+
+    # An end time at or before the start time means an overnight shift.
+    if (end_h, end_m) <= (start_h, start_m):
+        shift_end_dt += timedelta(days=1)
+
+    elapsed_seconds = (punch_out - shift_end_dt).total_seconds()
+    whole_minutes = int(elapsed_seconds // 60)
+
+    if whole_minutes < 30:
+        return 0
+
+    return whole_minutes
+
 
 
 # --------------------------------------------------------------------------- #
@@ -107,6 +155,11 @@ class PunchInIn(BaseModel):
     status: str = "PRESENT"
 
 
+class PunchOutIn(BaseModel):
+    emp_code: str
+    punched_at: Optional[int] = None
+
+
 # --------------------------------------------------------------------------- #
 # Endpoints provided
 # --------------------------------------------------------------------------- #
@@ -120,13 +173,12 @@ def create_employee(body: EmployeeIn):
     if db.employees.find_one({"emp_code": body.emp_code}):
         raise HTTPException(409, "emp_code already exists")
     doc = body.model_dump()
-    doc["created_at"] = datetime.now()
+    doc["created_at"] = datetime.now(timezone.utc)
     db.employees.insert_one(doc)
     doc.pop("_id", None)
+    doc["created_at"] = to_epoch_ms(doc["created_at"])
     return doc
 
-
-@app.get("/employees")
 
 @app.get("/employees")
 def list_employees(
@@ -149,6 +201,9 @@ def list_employees(
         .skip(skip)
         .limit(page_size)
     )
+    for item in items:
+        if item.get("created_at") is not None:
+            item["created_at"] = to_epoch_ms(item["created_at"])
 
     return {
         "items": items,
@@ -157,9 +212,6 @@ def list_employees(
         "page_size": page_size,
     }
 
-
-
-@app.post("/attendance/punch-in", status_code=201)
 
 @app.post("/attendance/punch-in", status_code=201)
 def punch_in(body: PunchInIn):
@@ -196,7 +248,11 @@ def punch_in(body: PunchInIn):
     d = attendance_date.isoformat()
 
     # 5. Calculate late minutes
-    late_minutes = compute_late_minutes(ts, shift_start)
+    late_minutes = compute_late_minutes(
+    ts,
+    shift_start,
+    shift_end,
+    )
 
     # 6. Create the attendance record
     doc = {
@@ -226,6 +282,112 @@ def punch_in(body: PunchInIn):
     doc["punch_in"] = to_epoch_ms(doc["punch_in"])
     doc["punch_out"] = to_epoch_ms(doc["punch_out"])
     return doc
+
+
+@app.post("/attendance/punch-out")
+def punch_out(body: PunchOutIn):
+    # 1. Verify that the employee exists.
+    emp = db.employees.find_one({"emp_code": body.emp_code})
+
+    if emp is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Employee not found",
+        )
+
+    # 2. Parse the requested punch-out time.
+    ts = parse_epoch_ms(body.punched_at)
+
+    # 3. Find the latest punch-in at or before this time.
+    record = db.attendance_logs.find_one(
+        {
+            "emp_code": body.emp_code,
+            "punch_in": {
+                "$ne": None,
+                "$lte": ts,
+            },
+        },
+        sort=[("punch_in", -1)],
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No punch-in found before the requested punch-out time",
+        )
+
+    # 4. Reject a record that has already been punched out.
+    if record.get("punch_out") is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Employee has already punched out",
+        )
+
+    # 5. MongoDB may return naive datetimes representing UTC.
+    punch_in_time = record["punch_in"]
+
+    if punch_in_time.tzinfo is None:
+        punch_in_time = punch_in_time.replace(tzinfo=timezone.utc)
+
+    punch_in_time = punch_in_time.astimezone(IST)
+
+    if ts <= punch_in_time:
+        raise HTTPException(
+            status_code=422,
+            detail="Punch-out must be after punch-in",
+        )
+
+    elapsed_seconds = (ts - punch_in_time).total_seconds()
+
+    if elapsed_seconds > 24 * 60 * 60:
+        raise HTTPException(
+            status_code=422,
+            detail="Punch-out cannot be more than 24 hours after punch-in",
+        )
+
+    # 6. Calculate derived attendance values.
+    work_hours = compute_work_hours(punch_in_time, ts)
+
+    overtime_minutes = compute_overtime(
+        ts,
+        emp["shift_start"],
+        emp["shift_end"],
+        record["date"],
+    )
+
+    half_day = work_hours < 4.50
+
+    # 7. Atomically update only if the record is still open.
+    result = db.attendance_logs.update_one(
+        {
+            "_id": record["_id"],
+            "punch_out": None,
+        },
+        {
+            "$set": {
+                "punch_out": ts,
+                "work_hours": work_hours,
+                "overtime_minutes": overtime_minutes,
+                "half_day": half_day,
+            },
+        },
+    )
+
+    # If another request punched out first, this update won't match.
+    if result.modified_count != 1:
+        raise HTTPException(
+            status_code=409,
+            detail="Attendance has already been punched out",
+        )
+
+    # 8. Return the updated record without MongoDB's internal ID.
+    updated = db.attendance_logs.find_one({"_id": record["_id"]})
+
+    updated.pop("_id", None)
+    updated["punch_in"] = to_epoch_ms(updated["punch_in"])
+    updated["punch_out"] = to_epoch_ms(updated["punch_out"])
+
+    return updated
 
 
 
