@@ -1,26 +1,99 @@
-# Candidate kit
 
-Read in this order:
+@'
+# Employee Attendance & Analytics API
 
-1. `PROBLEM_STATEMENT.docx`: what you are asked to do, how it is evaluated.
-2. `openapi.yaml`: the API contract and the business rules (R1 - R10).
-3. `DATA_MODEL.md`: what is stored in MongoDB, with nine sample documents.
-4. `app/main.py`: the starter. Put **all** your code in this one file. It must start with `uvicorn app.main:app --port 8000`.
-5. `REVIEW.md`, `DECISIONS.md`: templates to fill in.
+A FastAPI and MongoDB REST API for employee management and attendance tracking, developed as part of the HROne Software Engineer hiring assignment.
 
-`sample_data/` holds the nine sample documents as MongoDB Extended JSON; `sample_seed.py` loads them. The grader's dataset is
-much larger and contains cases they do not show.
+## Tech Stack
 
-## Local setup
-```bash
-python -m venv .venv && source .venv/bin/activate
+- Python 3.11+
+- FastAPI and Pydantic
+- PyMongo
+- MongoDB 6.0+
+- Uvicorn
+
+## Features Implemented
+
+- Health check that verifies MongoDB connectivity.
+- Employee creation with input validation and duplicate employee-code protection.
+- Employee listing with department filtering, sorting, pagination, and total count.
+- Attendance punch-in with employee validation, timestamp validation, IST handling, late-arrival calculation, and duplicate protection.
+- Attendance punch-out with work-hour calculation, overtime calculation, and half-day determination.
+- Attendance listing with filters, database-side sorting and pagination, and timestamp conversion.
+- MongoDB indexes for unique employee codes and unique employee attendance per date.
+
+## API Endpoints
+
+| Method | Endpoint | Status |
+|---|---|---|
+| GET | `/health` | Implemented |
+| POST | `/employees` | Implemented |
+| GET | `/employees` | Implemented |
+| POST | `/attendance/punch-in` | Implemented |
+| POST | `/attendance/punch-out` | Implemented |
+| GET | `/attendance` | Implemented |
+| PATCH | `/attendance/{emp_code}/{date}` | Not implemented yet |
+| GET | `/analytics/employees/{emp_code}/monthly` | Not implemented yet |
+| GET | `/analytics/departments/summary` | Not implemented yet |
+| GET | `/analytics/leaderboard/late` | Not implemented yet |
+| GET | `/analytics/departments/{department}/trend` | Not implemented yet |
+| GET | `/admin/explain/{endpoint}` | Not implemented yet |
+
+The status above reflects the current implementation and will be updated as additional endpoints are completed.
+
+## Prerequisites
+
+- Python 3.11 or newer
+- MongoDB 6.0 or newer, either locally or through MongoDB Atlas
+- Git
+
+## Setup
+
+Run these commands from the repository root in PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-cp .env.example .env            # set MONGO_URI / MONGO_DB (local docker: docker run -p 27017:27017 mongo:7)
-python sample_seed.py
-uvicorn app.main:app --port 8000 --reload
 ```
-MongoDB **6.0 or newer** is required (the grader uses 7.0). MongoDB Atlas free tier (M0) works.
 
-## Submit
-A public Git repository with `app/main.py`, `requirements.txt`, `REVIEW.md`, `DECISIONS.md` and a short `README.md`.
-No `.env`, no secrets, no Dockerfile.
+Create a local `.env` file in the repository root with your own MongoDB connection details:
+
+```dotenv
+MONGO_URI=your_mongodb_connection_string
+MONGO_DB=attendance_db
+```
+
+Keep `.env` private. Do not commit database credentials or other secrets to Git.
+
+## Run the API
+
+```powershell
+uvicorn app.main:app --port 8000
+```
+
+Open the interactive API documentation at:
+
+- Swagger UI: http://127.0.0.1:8000/docs
+- Health check: http://127.0.0.1:8000/health
+
+The application creates its configured MongoDB indexes when the module is loaded.
+
+## Data and Business Rules
+
+- API timestamps are represented as epoch milliseconds.
+- Attendance dates use the Asia/Kolkata (IST) calendar date.
+- Attendance records are uniquely identified by employee code and attendance date.
+- Supported punch-in statuses are `PRESENT`, `WFH`, and `ON_DUTY`.
+- Work hours use two-decimal half-up rounding.
+- Overtime is counted only when it reaches the required 30-minute threshold.
+- Pagination starts at page 1 and uses a maximum page size of 100.
+
+## Current Limitations
+
+The PATCH attendance-correction endpoint and analytics endpoints listed above remain to be implemented. The project should not be considered fully compliant with the assignment contract until these are completed and tested.
+
+## Submission
+
+Repository: https://github.com/Rithik333R/attendance-analytics-api
+'@ | Set-Content README.md -Encoding utf8
