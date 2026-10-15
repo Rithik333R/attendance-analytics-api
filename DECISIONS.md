@@ -1,5 +1,5 @@
 
-@'
+
 # DECISIONS.md
 
 1. **Indexes.** I created a unique index on `employees.emp_code` to prevent duplicate employee codes, and a unique compound index on `attendance_logs.emp_code` and `date` to allow only one attendance record per employee per day. I also use a date-and-employee index to support attendance queries. I would consider an index on `joined_on` for larger employee datasets, but would check query plans before adding it.
@@ -11,4 +11,3 @@
 4. **Headcount.** The department summary starts with employees who joined by the month's end, then uses `$lookup` and preserves employees with no matching attendance records. They still count toward headcount.
 
 5. **100x data.** I would inspect execution statistics, validate index usage, and run realistic load tests. I would then tune indexes and aggregation pipelines based on measured bottlenecks.
-'@ | Set-Content DECISIONS.md -Encoding utf8
