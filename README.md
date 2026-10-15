@@ -1,4 +1,4 @@
-
+﻿
 @'
 # Employee Attendance & Analytics API
 
@@ -32,11 +32,11 @@ A FastAPI and MongoDB REST API for employee management and attendance tracking, 
 | POST | `/attendance/punch-in` | Implemented |
 | POST | `/attendance/punch-out` | Implemented |
 | GET | `/attendance` | Implemented |
-| PATCH | `/attendance/{emp_code}/{date}` | Not implemented yet |
-| GET | `/analytics/employees/{emp_code}/monthly` | Not implemented yet |
-| GET | `/analytics/departments/summary` | Not implemented yet |
-| GET | `/analytics/leaderboard/late` | Not implemented yet |
-| GET | `/analytics/departments/{department}/trend` | Not implemented yet |
+| PATCH | `/attendance/{emp_code}/{date}` | Implemented; needs testing |
+| GET | `/analytics/employees/{emp_code}/monthly` | Implemented and tested |
+| GET | `/analytics/departments/summary` | Implemented and tested |
+| GET | `/analytics/leaderboard/late` | Implemented and tested |
+| GET | `/analytics/departments/{department}/trend` | Implemented; missing-date handling incomplete |
 | GET | `/admin/explain/{endpoint}` | Not implemented yet |
 
 The status above reflects the current implementation and will be updated as additional endpoints are completed.
@@ -91,7 +91,7 @@ The application creates its configured MongoDB indexes when the module is loaded
 
 ## Current Limitations
 
-The PATCH attendance-correction endpoint and analytics endpoints listed above remain to be implemented. The project should not be considered fully compliant with the assignment contract until these are completed and tested.
+The admin explain endpoint is not implemented. Department trend currently omits dates with zero attendance, and PATCH still needs runtime testing. Some assignment requirements and edge cases may remain incomplete.
 
 ## Submission
 
