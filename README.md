@@ -1,5 +1,4 @@
 ﻿
-@'
 # Employee Attendance & Analytics API
 
 A FastAPI and MongoDB REST API for employee management and attendance tracking, developed as part of the HROne Software Engineer hiring assignment.
@@ -96,4 +95,4 @@ The admin explain endpoint is not implemented. Department trend currently omits 
 ## Submission
 
 Repository: https://github.com/Rithik333R/attendance-analytics-api
-'@ | Set-Content README.md -Encoding utf8
+
